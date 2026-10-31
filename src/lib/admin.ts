@@ -1,5 +1,5 @@
 import "server-only";
-import { db } from "@/lib/db";
+import { db, d1Query, d1Exec, isCloudflareWorkers } from "@/lib/db";
 import type {
   ApiSource,
   Channel,
@@ -26,18 +26,39 @@ export interface ApiSourceInput {
 }
 
 export async function listApiSources(): Promise<ApiSource[]> {
+  if (isCloudflareWorkers) {
+    const rows = await d1Query("SELECT * FROM ApiSource ORDER BY active DESC, createdAt ASC");
+    return rows as unknown as ApiSource[];
+  }
   return db.apiSource.findMany({ orderBy: [{ active: "desc" }, { createdAt: "asc" }] });
 }
 
 export async function getActiveApiSource(): Promise<ApiSource | null> {
+  if (isCloudflareWorkers) {
+    let rows = await d1Query("SELECT * FROM ApiSource WHERE active = 1 LIMIT 1");
+    if (rows.length === 0) {
+      rows = await d1Query("SELECT * FROM ApiSource ORDER BY createdAt DESC LIMIT 1");
+    }
+    return (rows[0] as unknown as ApiSource) ?? null;
+  }
   const active = await db.apiSource.findFirst({ where: { active: true } });
   if (active) return active;
-  // Fall back to the most recent source if none is explicitly active.
   return db.apiSource.findFirst({ orderBy: { createdAt: "desc" } });
 }
 
 export async function createApiSource(input: ApiSourceInput): Promise<ApiSource> {
-  // If this source is set active, deactivate the others first.
+  if (isCloudflareWorkers) {
+    if (input.active) {
+      await d1Exec("UPDATE ApiSource SET active = 0");
+    }
+    const id = `src-${Date.now()}`;
+    const headers = JSON.stringify(input.headers || {}).replace(/'/g, "''");
+    const docsUrl = input.docsUrl ? `'${input.docsUrl.replace(/'/g, "''")}'` : "NULL";
+    await d1Exec(`INSERT INTO ApiSource (id, name, baseUrl, headers, docsUrl, active, healthy, createdAt, updatedAt) VALUES ('${id}', '${input.name.replace(/'/g, "''")}', '${input.baseUrl.replace(/'/g, "''")}', '${headers}', ${docsUrl}, ${input.active ? 1 : 0}, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
+    invalidateCache();
+    const rows = await d1Query("SELECT * FROM ApiSource WHERE id = ?", [id]);
+    return rows[0] as unknown as ApiSource;
+  }
   if (input.active) {
     await db.apiSource.updateMany({ data: { active: false } });
   }
@@ -58,6 +79,22 @@ export async function updateApiSource(
   id: string,
   input: Partial<ApiSourceInput>
 ): Promise<ApiSource> {
+  if (isCloudflareWorkers) {
+    if (input.active) {
+      await d1Exec("UPDATE ApiSource SET active = 0");
+    }
+    const sets: string[] = [];
+    if (input.name !== undefined) sets.push(`name = '${input.name.replace(/'/g, "''")}'`);
+    if (input.baseUrl !== undefined) sets.push(`baseUrl = '${input.baseUrl.replace(/'/g, "''")}'`);
+    if (input.headers !== undefined) sets.push(`headers = '${JSON.stringify(input.headers).replace(/'/g, "''")}'`);
+    if (input.docsUrl !== undefined) sets.push(`docsUrl = ${input.docsUrl ? `'${input.docsUrl.replace(/'/g, "''")}'` : "NULL"}`);
+    if (input.active !== undefined) sets.push(`active = ${input.active ? 1 : 0}`);
+    sets.push("updatedAt = CURRENT_TIMESTAMP");
+    await d1Exec(`UPDATE ApiSource SET ${sets.join(", ")} WHERE id = '${id}'`);
+    invalidateCache();
+    const rows = await d1Query("SELECT * FROM ApiSource WHERE id = ?", [id]);
+    return rows[0] as unknown as ApiSource;
+  }
   if (input.active) {
     await db.apiSource.updateMany({ where: { id: { not: id } }, data: { active: false } });
   }
@@ -73,15 +110,25 @@ export async function updateApiSource(
 }
 
 export async function deleteApiSource(id: string): Promise<void> {
+  if (isCloudflareWorkers) {
+    await d1Exec(`DELETE FROM ApiSource WHERE id = '${id}'`);
+    invalidateCache();
+    return;
+  }
   await db.apiSource.delete({ where: { id } });
   invalidateCache();
 }
 
 export async function setActiveApiSource(id: string): Promise<ApiSource> {
+  if (isCloudflareWorkers) {
+    await d1Exec("UPDATE ApiSource SET active = 0");
+    await d1Exec(`UPDATE ApiSource SET active = 1 WHERE id = '${id}'`);
+    invalidateCache();
+    const rows = await d1Query("SELECT * FROM ApiSource WHERE id = ?", [id]);
+    return rows[0] as unknown as ApiSource;
+  }
   await db.apiSource.updateMany({ where: { id: { not: id } }, data: { active: false } });
   const item = await db.apiSource.update({ where: { id }, data: { active: true } });
-  // Switching the active upstream must drop the cached streams response
-  // so the next /api/streams request fetches from the new source.
   invalidateCache();
   return item;
 }
@@ -100,10 +147,18 @@ export interface ChannelInput {
 }
 
 export async function listChannels(): Promise<Channel[]> {
+  if (isCloudflareWorkers) {
+    const rows = await d1Query("SELECT * FROM Channel ORDER BY sortOrder ASC, createdAt DESC");
+    return rows as unknown as Channel[];
+  }
   return db.channel.findMany({ orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }] });
 }
 
 export async function listEnabledChannels(): Promise<Channel[]> {
+  if (isCloudflareWorkers) {
+    const rows = await d1Query("SELECT * FROM Channel WHERE enabled = 1 ORDER BY sortOrder ASC, createdAt DESC");
+    return rows as unknown as Channel[];
+  }
   return db.channel.findMany({
     where: { enabled: true },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
@@ -111,6 +166,15 @@ export async function listEnabledChannels(): Promise<Channel[]> {
 }
 
 export async function createChannel(input: ChannelInput): Promise<Channel> {
+  if (isCloudflareWorkers) {
+    const id = `ch-${Date.now()}`;
+    const logo = input.logo ? `'${input.logo.replace(/'/g, "''")}'` : "NULL";
+    const tags = input.tags ? `'${input.tags.replace(/'/g, "''")}'` : "NULL";
+    await d1Exec(`INSERT INTO Channel (id, name, category, logo, streamUrl, sourceType, enabled, tags, sortOrder, createdAt, updatedAt) VALUES ('${id}', '${input.name.replace(/'/g, "''")}', '${(input.category || "other").replace(/'/g, "''")}', ${logo}, '${input.streamUrl.replace(/'/g, "''")}', '${(input.sourceType || "manual").replace(/'/g, "''")}', ${input.enabled !== false ? 1 : 0}, ${tags}, ${input.sortOrder || 0}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
+    invalidateCache();
+    const rows = await d1Query("SELECT * FROM Channel WHERE id = ?", [id]);
+    return rows[0] as unknown as Channel;
+  }
   const item = await db.channel.create({
     data: {
       name: input.name,
@@ -128,6 +192,18 @@ export async function createChannel(input: ChannelInput): Promise<Channel> {
 }
 
 export async function createManyChannels(inputs: ChannelInput[]): Promise<number> {
+  if (isCloudflareWorkers) {
+    let count = 0;
+    for (const input of inputs) {
+      const id = `ch-${Date.now()}-${count}`;
+      const logo = input.logo ? `'${input.logo.replace(/'/g, "''")}'` : "NULL";
+      const tags = input.tags ? `'${input.tags.replace(/'/g, "''")}'` : "NULL";
+      await d1Exec(`INSERT INTO Channel (id, name, category, logo, streamUrl, sourceType, enabled, tags, sortOrder, createdAt, updatedAt) VALUES ('${id}', '${input.name.replace(/'/g, "''")}', '${(input.category || "other").replace(/'/g, "''")}', ${logo}, '${input.streamUrl.replace(/'/g, "''")}', '${(input.sourceType || "manual").replace(/'/g, "''")}', 1, ${tags}, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
+      count++;
+    }
+    invalidateCache();
+    return count;
+  }
   const res = await db.channel.createMany({
     data: inputs.map((i) => ({
       name: i.name,
@@ -148,6 +224,21 @@ export async function updateChannel(
   id: string,
   input: Partial<ChannelInput>
 ): Promise<Channel> {
+  if (isCloudflareWorkers) {
+    const sets: string[] = [];
+    if (input.name !== undefined) sets.push(`name = '${input.name.replace(/'/g, "''")}'`);
+    if (input.category !== undefined) sets.push(`category = '${input.category.replace(/'/g, "''")}'`);
+    if (input.logo !== undefined) sets.push(`logo = ${input.logo ? `'${input.logo.replace(/'/g, "''")}'` : "NULL"}`);
+    if (input.streamUrl !== undefined) sets.push(`streamUrl = '${input.streamUrl.replace(/'/g, "''")}'`);
+    if (input.enabled !== undefined) sets.push(`enabled = ${input.enabled ? 1 : 0}`);
+    if (input.tags !== undefined) sets.push(`tags = ${input.tags ? `'${input.tags.replace(/'/g, "''")}'` : "NULL"}`);
+    if (input.sortOrder !== undefined) sets.push(`sortOrder = ${input.sortOrder}`);
+    sets.push("updatedAt = CURRENT_TIMESTAMP");
+    await d1Exec(`UPDATE Channel SET ${sets.join(", ")} WHERE id = '${id}'`);
+    invalidateCache();
+    const rows = await d1Query("SELECT * FROM Channel WHERE id = ?", [id]);
+    return rows[0] as unknown as Channel;
+  }
   const data: Record<string, unknown> = {};
   if (input.name !== undefined) data.name = input.name;
   if (input.category !== undefined) data.category = input.category;
@@ -162,11 +253,23 @@ export async function updateChannel(
 }
 
 export async function deleteChannel(id: string): Promise<void> {
+  if (isCloudflareWorkers) {
+    await d1Exec(`DELETE FROM Channel WHERE id = '${id}'`);
+    invalidateCache();
+    return;
+  }
   await db.channel.delete({ where: { id } });
   invalidateCache();
 }
 
 export async function deleteManyChannels(ids: string[]): Promise<number> {
+  if (isCloudflareWorkers) {
+    for (const id of ids) {
+      await d1Exec(`DELETE FROM Channel WHERE id = '${id}'`);
+    }
+    invalidateCache();
+    return ids.length;
+  }
   const res = await db.channel.deleteMany({ where: { id: { in: ids } } });
   invalidateCache();
   return res.count;
@@ -187,6 +290,27 @@ const DEFAULT_AD_CONFIG: AdConfigShape = {
 };
 
 export async function getAdConfig(): Promise<AdConfig & { _parsed: AdConfigShape }> {
+  if (isCloudflareWorkers) {
+    const rows = await d1Query("SELECT * FROM AdConfig WHERE id = ?", ["global"]);
+    let row: Record<string, unknown>;
+    if (rows.length === 0) {
+      await d1Exec("INSERT OR IGNORE INTO AdConfig (id, adsEnabled, config, scriptUrls) VALUES ('global', 0, '{}', '[]')");
+      row = { id: "global", adsEnabled: 0, config: "{}", scriptUrls: "[]" };
+    } else {
+      row = rows[0];
+    }
+    let parsed: AdConfigShape;
+    try {
+      parsed = {
+        adsEnabled: Boolean(row.adsEnabled),
+        config: JSON.parse((row.config as string) || "{}"),
+        scriptUrls: JSON.parse((row.scriptUrls as string) || "[]"),
+      };
+    } catch {
+      parsed = DEFAULT_AD_CONFIG;
+    }
+    return { ...(row as unknown as AdConfig), _parsed: parsed };
+  }
   let row = await db.adConfig.findUnique({ where: { id: "global" } });
   if (!row) {
     row = await db.adConfig.create({ data: { id: "global" } });
@@ -454,6 +578,15 @@ export interface SiteBranding {
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {
+  if (isCloudflareWorkers) {
+    const rows = await d1Query("SELECT * FROM SiteConfig WHERE id = ?", ["global"]);
+    if (rows.length > 0) {
+      return rows[0] as unknown as SiteConfig;
+    }
+    await d1Exec("INSERT OR IGNORE INTO SiteConfig (id, contentMode, siteName) VALUES ('global', 'auto', 'StreamSpatial')");
+    const rows2 = await d1Query("SELECT * FROM SiteConfig WHERE id = ?", ["global"]);
+    return rows2[0] as unknown as SiteConfig;
+  }
   let row = await db.siteConfig.findUnique({ where: { id: "global" } });
   if (!row) {
     row = await db.siteConfig.create({ data: { id: "global" } });
@@ -462,11 +595,22 @@ export async function getSiteConfig(): Promise<SiteConfig> {
 }
 
 export async function getContentMode(): Promise<ContentMode> {
+  if (isCloudflareWorkers) {
+    const rows = await d1Query("SELECT contentMode FROM SiteConfig WHERE id = ?", ["global"]);
+    const mode = (rows[0]?.contentMode as string) || "auto";
+    return mode === "manual" ? "manual" : "auto";
+  }
   const cfg = await getSiteConfig();
   return cfg.contentMode === "manual" ? "manual" : "auto";
 }
 
 export async function setContentMode(mode: ContentMode): Promise<SiteConfig> {
+  if (isCloudflareWorkers) {
+    await d1Exec(`INSERT OR REPLACE INTO SiteConfig (id, contentMode, siteName, siteLogo, updatedAt) VALUES ('global', '${mode}', COALESCE((SELECT siteName FROM SiteConfig WHERE id='global'), 'StreamSpatial'), (SELECT siteLogo FROM SiteConfig WHERE id='global'), CURRENT_TIMESTAMP)`);
+    const rows = await d1Query("SELECT * FROM SiteConfig WHERE id = ?", ["global"]);
+    invalidateCache();
+    return rows[0] as unknown as SiteConfig;
+  }
   const row = await db.siteConfig.upsert({
     where: { id: "global" },
     create: { id: "global", contentMode: mode },
@@ -478,6 +622,13 @@ export async function setContentMode(mode: ContentMode): Promise<SiteConfig> {
 
 /** Read the site branding (name + logo) for site-wide display. */
 export async function getBranding(): Promise<SiteBranding> {
+  if (isCloudflareWorkers) {
+    const rows = await d1Query("SELECT siteName, siteLogo FROM SiteConfig WHERE id = ?", ["global"]);
+    return {
+      siteName: (rows[0]?.siteName as string) || "StreamSpatial",
+      siteLogo: (rows[0]?.siteLogo as string) ?? null,
+    };
+  }
   const cfg = await getSiteConfig();
   return {
     siteName: cfg.siteName || "StreamSpatial",
@@ -490,6 +641,22 @@ export async function updateBranding(input: {
   siteName?: string;
   siteLogo?: string | null;
 }): Promise<SiteBranding> {
+  if (isCloudflareWorkers) {
+    const sets: string[] = [];
+    if (input.siteName !== undefined) sets.push(`siteName = '${input.siteName.replace(/'/g, "''")}'`);
+    if (input.siteLogo !== undefined) sets.push(`siteLogo = ${input.siteLogo ? `'${input.siteLogo.replace(/'/g, "''")}'` : "NULL"}`);
+    sets.push("updatedAt = CURRENT_TIMESTAMP");
+    await d1Exec(`INSERT OR IGNORE INTO SiteConfig (id, contentMode, siteName) VALUES ('global', 'auto', 'StreamSpatial')`);
+    if (sets.length > 1) {
+      await d1Exec(`UPDATE SiteConfig SET ${sets.join(", ")} WHERE id = 'global'`);
+    }
+    invalidateCache();
+    const rows = await d1Query("SELECT siteName, siteLogo FROM SiteConfig WHERE id = ?", ["global"]);
+    return {
+      siteName: (rows[0]?.siteName as string) || "StreamSpatial",
+      siteLogo: (rows[0]?.siteLogo as string) ?? null,
+    };
+  }
   const data: Record<string, unknown> = {};
   if (input.siteName !== undefined) data.siteName = input.siteName;
   if (input.siteLogo !== undefined) data.siteLogo = input.siteLogo ?? null;
