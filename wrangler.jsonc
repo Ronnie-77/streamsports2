@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "streamsports",
+  "compatibility_date": "2026-10-23",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "ADMIN_PASSWORD": "Ronnie7700???",
+    "DATABASE_URL": "file:./db/custom.db"
+  }
+}

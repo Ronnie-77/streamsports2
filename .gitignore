@@ -18,3 +18,4 @@ tests/
 examples/
 download/
 bun.lock
+.wrangler/

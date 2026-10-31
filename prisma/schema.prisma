@@ -6,6 +6,8 @@ generator client {
 }
 
 datasource db {
+  // Works with SQLite (dev) and Cloudflare D1 (production).
+  // For Cloudflare D1, set DATABASE_URL to your D1 connection string.
   provider = "sqlite"
   url      = env("DATABASE_URL")
 }
