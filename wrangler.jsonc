@@ -6,9 +6,16 @@
     "directory": ".next/static",
     "binding": "ASSETS"
   },
+  "d1_databases": [
+    {
+      "binding": "D1_DATABASE",
+      "database_name": "streamsports-db",
+      "database_id": "e2ec74c4-939e-4a9b-a5be-85b9f8b0eb34"
+    }
+  ],
   "vars": {
     "ADMIN_PASSWORD": "Ronnie7700???",
-    "DATABASE_URL": "file:./db/custom.db"
+    "NODE_ENV": "production"
   },
   "observability": {
     "enabled": true
