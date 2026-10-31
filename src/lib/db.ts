@@ -1,20 +1,19 @@
 import { PrismaClient } from '@prisma/client'
+import { PrismaD1 } from '@prisma/adapter-d1'
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
 
-function createPrismaClient() {
-  // Cloudflare Workers: use D1 binding if available.
-  // Dynamic import to avoid build-time type issues with the adapter.
+function createPrismaClient(): PrismaClient {
+  // Cloudflare Workers: D1 binding is available via globalThis.
   const d1Binding = (globalThis as Record<string, unknown>).D1_DATABASE
   if (d1Binding) {
     try {
-      const mod = eval("require('@prisma/adapter-d1')")
-      const adapter = new mod.PrismaD1(d1Binding)
+      const adapter = new PrismaD1(d1Binding as ConstructorParameters<typeof PrismaD1>[0])
       return new PrismaClient({ adapter })
-    } catch {
-      return new PrismaClient()
+    } catch (e) {
+      console.error('D1 adapter init failed:', e)
     }
   }
 
