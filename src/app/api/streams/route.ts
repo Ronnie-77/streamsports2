@@ -60,50 +60,49 @@ function normalize(data: StreamsResponse): StreamsResponse {
 /** Merge manually-added channels into the streams response. */
 function mergeManualChannels(
   data: StreamsResponse,
-  channels: Awaited<ReturnType<typeof listEnabledChannels>>
+  channels: Record<string, unknown>[]
 ): StreamsResponse {
   if (channels.length === 0) return data;
   const catMap = new Map<string, StreamCategory>();
   for (const c of data.streams) catMap.set(c.category, c);
 
   let nextId = Math.max(0, ...data.streams.map((c) => c.id)) + 1000;
+  const now = Math.floor(Date.now() / 1000);
 
   for (const ch of channels) {
-    const catKey = ch.category || "other";
+    const catKey = (ch.category as string) || "other";
     let cat = catMap.get(catKey);
     if (!cat) {
       cat = { category: catKey, id: nextId++, streams: [] };
       catMap.set(catKey, cat);
       data.streams.push(cat);
     }
-    // Manual channels: if the stream URL is a directly-playable video
-    // format (.m3u8/.mpd/.ts/.mp4) we play it inline with our player;
-    // otherwise we treat it as a redirect target.
-    const direct = isDirectStreamUrl(ch.streamUrl);
+    const streamUrl = ch.streamUrl as string;
+    const direct = isDirectStreamUrl(streamUrl);
     const stream: Stream = {
-      id: ch.id,
-      name: ch.name,
-      poster: ch.logo ?? undefined,
-      starts_at: Math.floor(Date.now() / 1000),
-      ends_at: Math.floor(Date.now() / 1000) + 7200,
+      id: ch.id as string,
+      name: ch.name as string,
+      poster: (ch.logo as string) ?? undefined,
+      starts_at: now,
+      ends_at: now + 7200,
       category_name: catKey,
       status: "live",
       league: "Manual channel",
       viewers: 0,
       playMode: direct ? "direct" : "redirect",
-      directUrl: direct ? ch.streamUrl : undefined,
+      directUrl: direct ? streamUrl : undefined,
       sources: [
         {
           source: "manual",
           id: "m1",
-          name: ch.name,
-          embed: ch.streamUrl,
+          name: ch.name as string,
+          embed: streamUrl,
           playMode: direct ? "direct" : "redirect",
-          directUrl: direct ? ch.streamUrl : undefined,
+          directUrl: direct ? streamUrl : undefined,
         },
       ],
-      iframe: ch.streamUrl,
-      embed: ch.streamUrl,
+      iframe: streamUrl,
+      embed: streamUrl,
     };
     cat.streams.push(stream);
   }
@@ -132,12 +131,12 @@ async function fetchFromActiveSource(): Promise<StreamsResponse | null> {
   }
 
   // ---- Auto mode: active API's full content + all channels ---------------
-  const src = await getActiveApiSource();
-  const baseUrl = src?.baseUrl || FALLBACK_URL;
+  const src = await getActiveApiSource() as Record<string, unknown> | null;
+  const baseUrl = (src?.baseUrl as string) || FALLBACK_URL;
   let headers: Record<string, string> = { ...FALLBACK_HEADERS };
   if (src?.headers) {
     try {
-      headers = { ...headers, ...JSON.parse(src.headers) };
+      headers = { ...headers, ...JSON.parse(src.headers as string) };
     } catch {
       /* ignore */
     }
@@ -278,24 +277,25 @@ export async function GET() {
 
 /** Convert manual channels to a streams payload (for the fallback path). */
 function curatedToChannels(
-  channels: Awaited<ReturnType<typeof listEnabledChannels>>
+  channels: Record<string, unknown>[]
 ): import("@/lib/types").StreamCategory[] {
   if (channels.length === 0) return [];
   const t = Math.floor(Date.now() / 1000);
   const catMap = new Map<string, import("@/lib/types").StreamCategory>();
   let nextId = 4000;
   for (const ch of channels) {
-    const catKey = ch.category || "other";
+    const catKey = (ch.category as string) || "other";
     let cat = catMap.get(catKey);
     if (!cat) {
       cat = { category: catKey, id: nextId++, streams: [] };
       catMap.set(catKey, cat);
     }
-    const direct = isDirectStreamUrl(ch.streamUrl);
+    const streamUrl = ch.streamUrl as string;
+    const direct = isDirectStreamUrl(streamUrl);
     cat.streams.push({
-      id: ch.id,
-      name: ch.name,
-      poster: ch.logo ?? undefined,
+      id: ch.id as string,
+      name: ch.name as string,
+      poster: (ch.logo as string) ?? undefined,
       starts_at: t,
       ends_at: t + 7200,
       category_name: catKey,
@@ -303,19 +303,19 @@ function curatedToChannels(
       league: "Manual channel",
       viewers: 0,
       playMode: direct ? "direct" : "redirect",
-      directUrl: direct ? ch.streamUrl : undefined,
+      directUrl: direct ? streamUrl : undefined,
       sources: [
         {
           source: "manual",
           id: "m1",
-          name: ch.name,
-          embed: ch.streamUrl,
+          name: ch.name as string,
+          embed: streamUrl,
           playMode: direct ? "direct" : "redirect",
-          directUrl: direct ? ch.streamUrl : undefined,
+          directUrl: direct ? streamUrl : undefined,
         },
       ],
-      embed: ch.streamUrl,
-      iframe: ch.streamUrl,
+      embed: streamUrl,
+      iframe: streamUrl,
     });
   }
   return Array.from(catMap.values());

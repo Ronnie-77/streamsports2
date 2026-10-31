@@ -1,64 +1,77 @@
+// Database layer — works on Cloudflare Workers (D1) and local dev (Prisma/SQLite).
+// Falls back to in-memory storage if neither is available.
+
 import { PrismaClient } from '@prisma/client'
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
 
-// Local dev: standard PrismaClient with SQLite.
-// Cloudflare Workers: D1 is accessed directly via the binding (not through Prisma).
-// Prisma's D1 adapter has compatibility issues on Workers, so we use
-// the standard client only for local dev and fall back to direct D1
-// queries on Workers (handled in each route).
+// ---- In-memory fallback store ----
+const memStore = {
+  siteConfig: { id: 'global', contentMode: 'auto', siteName: 'StreamSpatial', siteLogo: null as string | null, updatedAt: new Date().toISOString() },
+  adConfig: { id: 'global', adsEnabled: 0, config: '{}', scriptUrls: '[]', updatedAt: new Date().toISOString() },
+  apiSources: [
+    { id: 'seed-damitv', name: 'DAMITV OnDemand', baseUrl: 'https://ondemand.st/papi/api', headers: '{"Referer":"https://ondemand.st/api-docs"}', docsUrl: 'https://ondemand.st/api-docs', active: 1, healthy: 1, lastCheck: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'seed-cinevid', name: 'Cinevid', baseUrl: 'https://cinevid.st/api/public/events', headers: '{}', docsUrl: 'https://cinevid.st/api-docs', active: 0, healthy: 1, lastCheck: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    { id: 'seed-vidcdn', name: 'Cinevid IPTV Channels', baseUrl: 'https://vidcdn.vip/api/channels', headers: '{}', docsUrl: 'https://cinevid.st/api-docs', active: 0, healthy: 1, lastCheck: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  ] as Record<string, unknown>[],
+  channels: [] as Record<string, unknown>[],
+  curatedMatches: [] as Record<string, unknown>[],
+}
 
-export const db =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    log: process.env.NODE_ENV !== 'production' ? ['query'] : undefined,
-  })
+// ---- Try to get D1 binding from various sources ----
+function getD1(): any | null {
+  // OpenNext may expose env through globalThis
+  const g = globalThis as Record<string, any>
+  if (g.D1_DATABASE) return g.D1_DATABASE
+  if (g.cloudflareEnv?.D1_DATABASE) return g.cloudflareEnv.D1_DATABASE
+  if (g.process?.env?.D1_DATABASE) return g.process.env.D1_DATABASE
+  return null
+}
 
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db
+export const isCloudflareWorkers = !!getD1()
+const d1 = getD1()
 
-// D1 direct query helper for Cloudflare Workers.
-// Falls back to Prisma in local dev.
-type D1Result = { results?: Record<string, unknown>[]; success: boolean; meta?: Record<string, unknown> }
+// Local dev Prisma client
+const localDb = (!d1 && process.env.DATABASE_URL)
+  ? (globalForPrisma.prisma ?? new PrismaClient({ log: process.env.NODE_ENV !== 'production' ? ['query'] : undefined }))
+  : null
+if (localDb && process.env.NODE_ENV !== 'production') globalForPrisma.prisma = localDb
 
+export { localDb as db }
+
+// ---- D1 query helpers ----
 export async function d1Query(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]> {
-  // In Cloudflare Workers, D1 binding is on globalThis.
-  const d1 = (globalThis as Record<string, unknown>).D1_DATABASE as
-    | { prepare: (sql: string) => { bind: (...params: unknown[]) => { all: () => Promise<D1Result> }; all: () => Promise<D1Result> } }
-    | undefined
-
   if (d1) {
     try {
       const stmt = params && params.length > 0 ? d1.prepare(sql).bind(...params) : d1.prepare(sql)
       const result = await stmt.all()
       return result.results || []
     } catch (e) {
-      console.error('D1 query error:', e)
+      console.error('D1 query error:', sql, e)
       return []
     }
   }
-
-  // Local dev fallback: not used (Prisma handles local dev)
   return []
 }
 
 export async function d1Exec(sql: string): Promise<boolean> {
-  const d1 = (globalThis as Record<string, unknown>).D1_DATABASE as
-    | { prepare: (sql: string) => { run: () => Promise<{ success: boolean }> } }
-    | undefined
-
   if (d1) {
     try {
-      const result = await d1.prepare(sql).run()
-      return result.success
+      await d1.prepare(sql).run()
+      return true
     } catch (e) {
-      console.error('D1 exec error:', e)
+      console.error('D1 exec error:', sql, e)
       return false
     }
   }
   return false
 }
 
-// Check if we're on Cloudflare Workers (D1 binding available).
-export const isCloudflareWorkers = !!(globalThis as Record<string, unknown>).D1_DATABASE
+// ---- Universal storage helpers (D1 > Prisma > in-memory) ----
+export const useD1 = !!d1
+export const usePrisma = !!localDb
+export const useMemory = !d1 && !localDb
+
+export { memStore }
