@@ -1,0 +1,127 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  authorId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---- Admin: configurable upstream stream API sources ---------------------
+// Only one is "active" at a time; the public /api/streams route fetches from
+// the active source and falls back to others on failure.
+model ApiSource {
+  id        String   @id @default(cuid())
+  name      String
+  baseUrl   String
+  // Extra headers to send (JSON string), e.g. {"Referer":"https://ondemand.st/api-docs"}
+  headers   String   @default("{}")
+  // Optional note / documentation URL
+  docsUrl   String?
+  active    Boolean  @default(false)
+  healthy   Boolean  @default(true)
+  lastCheck DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---- Admin: manually-added channels (JSON / m3u file / m3u link) ---------
+model Channel {
+  id          String   @id @default(cuid())
+  name        String
+  category    String   @default("other")
+  logo        String?
+  // HLS / m3u8 stream URL or embed URL the player loads
+  streamUrl   String
+  // source-type: where it came from
+  sourceType  String   @default("manual") // manual | json | m3u-file | m3u-link
+  // Whether it should appear in the public Channels list
+  enabled     Boolean  @default(true)
+  // Optional tags (comma-separated)
+  tags        String?
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([enabled])
+  @@index([category])
+}
+
+// ---- Admin: matches/channels selectively added from any API source ------
+// The admin can browse every configured API source and pick specific
+// streams to feature on the site. These are stored verbatim so the public
+// site doesn't need to re-fetch from the upstream.
+model CuratedMatch {
+  id           String   @id @default(cuid())
+  // Which API source it was picked from
+  sourceApiId  String?
+  // Original stream id within that source
+  streamId     String
+  name         String
+  category     String   @default("other")
+  poster       String?
+  league       String?
+  startsAt     DateTime?
+  endsAt       DateTime?
+  status       String   @default("upcoming") // live | upcoming
+  // Home/away team data (JSON string)
+  teams        String   @default("{}")
+  // Sources array (JSON string) — each {name, embed, hd, sd, ...}
+  sources      String   @default("[]")
+  embed        String?
+  iframe       String?
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([enabled])
+  @@index([category])
+  @@index([sourceApiId, streamId])
+}
+
+// ---- Admin: global site settings (content mode) -------------------------
+// A single row (keyed by id) holding the global content-mode toggle.
+model SiteConfig {
+  id          String   @id @default("global")
+  // "auto" = use the active API source's full live+schedule matches.
+  // "manual" = show only admin-curated matches (picked from any API).
+  contentMode String   @default("auto")
+  // Site branding — applied site-wide (header, footer, browser title).
+  siteName    String   @default("StreamSpatial")
+  siteLogo    String?
+  updatedAt   DateTime @updatedAt
+}
+
+// ---- Admin: ad configuration ---------------------------------------------
+// A single row (keyed by id) holding the global ad settings.
+model AdConfig {
+  id              String   @id @default("global")
+  adsEnabled      Boolean  @default(false)
+  // JSON string: ad provider settings, e.g.
+  // {"popunder":{"url":"...","enabled":true},"banner":{"html":"..."}}
+  config          String   @default("{}")
+  // Optional injected <script> src URLs (JSON array string)
+  scriptUrls      String   @default("[]")
+  updatedAt       DateTime @updatedAt
+}
